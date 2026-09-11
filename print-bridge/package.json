@@ -1,0 +1,13 @@
+{
+  "name": "restaurant-pos-print-bridge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Windows print bridge for the restaurant POS",
+  "scripts": {
+    "check": "node --check src/index.cjs",
+    "start": "node src/index.cjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
