@@ -113,3 +113,4 @@ npm run build
 
 ตั้งค่า Root Directory เป็น `restaurant-pos-web` แล้วเพิ่ม `VITE_SUPABASE_URL` และ `VITE_SUPABASE_PUBLISHABLE_KEY` ใน Vercel Production Environment การตั้งค่า `vercel.json` รองรับ route ของ React Router แล้ว
 # Restaurant
+# restaurant
