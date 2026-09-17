@@ -13,6 +13,8 @@ const navigationItems: readonly NavigationItem[] = [
   { to: '/ขาย', label: 'ขายหน้าร้าน', symbol: '⌑' },
   { to: '/บิลย้อนหลัง', label: 'บิลย้อนหลัง', symbol: '▤' },
   { to: '/รายงาน', label: 'รายงาน', symbol: '▥' },
+  { to: '/รายรับรายจ่าย', label: 'รายรับ–รายจ่าย', symbol: '฿' },
+  { to: '/งานพิมพ์', label: 'งานพิมพ์', symbol: '▣' },
   { to: '/สินค้า', label: 'สินค้า', symbol: '□' },
   { to: '/ตั้งค่า', label: 'ตั้งค่า', symbol: '⚙' },
 ]
@@ -22,7 +24,7 @@ export function AppShell() {
   const isOnline = useConnectivity()
   const email = profile?.displayName ?? session?.user.email ?? 'ผู้ใช้งาน'
   const navigationForRole = navigationItems.filter((item) => (
-    profile?.role === 'manager' || !['/สินค้า', '/ตั้งค่า'].includes(item.to)
+    profile?.role === 'manager' || !['/สินค้า', '/ตั้งค่า', '/รายรับรายจ่าย', '/งานพิมพ์'].includes(item.to)
   ))
 
   return (

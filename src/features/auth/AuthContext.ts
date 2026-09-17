@@ -10,9 +10,11 @@ export interface UserProfile {
 }
 
 export interface AuthContextValue {
+  readonly authError: string | null
   readonly isLoading: boolean
   readonly profile: UserProfile | null
   readonly session: Session | null
+  retryAuth(): void
   signIn(email: string, password: string): Promise<string | null>
   signOut(): Promise<void>
 }

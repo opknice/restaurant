@@ -23,7 +23,8 @@ const config = {
   fontName: process.env.PRINT_FONT_NAME ?? 'Leelawadee UI',
   pollIntervalMs: Number(process.env.PRINT_POLL_INTERVAL_MS ?? 2000),
   printerName: process.env.PRINT_PRINTER_NAME ?? '',
-  serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? '',
+  secretKey: process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY ?? '',
+  qrAllowedHosts: (process.env.PRINT_QR_ALLOWED_HOSTS ?? '').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean),
   statusPort: Number(process.env.PRINT_STATUS_PORT ?? 4318),
   supabaseUrl: (process.env.SUPABASE_URL ?? '').replace(/\/$/, ''),
 }
@@ -31,7 +32,7 @@ const config = {
 function assertConfig() {
   const missing = Object.entries({
     PRINT_PRINTER_NAME: config.printerName,
-    SUPABASE_SERVICE_ROLE_KEY: config.serviceRoleKey,
+    SUPABASE_SECRET_KEY: config.secretKey,
     SUPABASE_URL: config.supabaseUrl,
   }).filter(([, value]) => !value).map(([name]) => name)
   if (missing.length > 0) throw new Error(`ตั้งค่าไม่ครบ: ${missing.join(', ')}`)
@@ -41,13 +42,18 @@ function assertConfig() {
 }
 
 async function callRpc(functionName, body) {
+  const headers = {
+    apikey: config.secretKey,
+    'Content-Type': 'application/json',
+  }
+  // Legacy service-role JWTs require Authorization. New sb_secret_ keys must
+  // only be sent through the apikey header.
+  if (!config.secretKey.startsWith('sb_secret_')) {
+    headers.Authorization = `Bearer ${config.secretKey}`
+  }
   const response = await fetch(`${config.supabaseUrl}/rest/v1/rpc/${functionName}`, {
     method: 'POST',
-    headers: {
-      apikey: config.serviceRoleKey,
-      Authorization: `Bearer ${config.serviceRoleKey}`,
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify(body),
   })
   if (!response.ok) {
@@ -71,12 +77,35 @@ function thaiDateTime(value) {
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' })
 }
 
+function safeQrUrl(value) {
+  const raw = String(value ?? '').trim()
+  if (!raw) return ''
+  let parsed
+  try {
+    parsed = new URL(raw)
+  } catch {
+    throw new Error('QR_URL_INVALID: URL ของ QR ไม่ถูกต้อง')
+  }
+  const supabaseHost = new URL(config.supabaseUrl).hostname.toLowerCase()
+  const allowedHosts = new Set([supabaseHost, ...config.qrAllowedHosts])
+  if (parsed.protocol !== 'https:' || !allowedHosts.has(parsed.hostname.toLowerCase())) {
+    throw new Error('QR_URL_INVALID: QR ต้องเป็น HTTPS และอยู่ใน host ที่อนุญาต')
+  }
+  return parsed.toString()
+}
+
 function buildPrintModel(receipt) {
   const payload = receipt.payload ?? {}
   const payment = payload.payment ?? {}
   const store = payload.store ?? {}
   const table = payload.table ?? {}
+  const displayOrderNumber = payload.display_order_number ?? payload.order_number ?? '-'
   const isField = receipt.mode === 'field'
+  const paymentLine = payment.method === 'cash'
+    ? `เงินสด รับ ${money(payment.received_amount)} ทอน ${money(payment.change_amount)}`
+    : payment.method === 'transfer'
+      ? `เงินโอน${payment.transfer_reference ? ` (${payment.transfer_reference})` : ''}`
+      : ''
   const items = Array.isArray(payload.items) ? payload.items.map((item) => ({
     Name: String(item.name ?? ''),
     Quantity: String(item.quantity ?? 0),
@@ -86,16 +115,16 @@ function buildPrintModel(receipt) {
 
   return {
     Mode: receipt.mode,
-    HeaderLines: isField
-      ? [`โต๊ะ ${table.name ?? '-'}`, `บิล #${payload.order_number ?? '-'}`]
-      : [String(store.store_name ?? 'ร้านอาหาร'), String(store.phone ?? ''), `บิล #${payload.order_number ?? '-'}  โต๊ะ ${table.name ?? '-'}`, thaiDateTime(payload.closed_at)],
+    HeaderLines: isField ? [] : [String(store.store_name ?? 'ร้านอาหาร'), String(store.phone ?? ''), `บิล #${displayOrderNumber}  โต๊ะ ${table.name ?? '-'}`, thaiDateTime(payload.closed_at ?? payload.opened_at)],
     Items: items,
     IsField: isField,
+    QrPath: isField ? '' : safeQrUrl(store.payment_qr_path),
+    QrCaptionLines: isField ? [] : [store.bank_payment_label, store.bank_account_name, store.bank_account_number, store.bank_reference].filter(Boolean).map(String),
     FooterLines: isField ? [] : [
       `ยอดอาหาร                         ${money(payload.subtotal)}`,
       numeric(payload.discount) > 0 ? `ส่วนลด                            -${money(payload.discount)}` : '',
       `รวมสุทธิ                         ${money(payload.total)}`,
-      payment.method === 'cash' ? `เงินสด รับ ${money(payment.received_amount)} ทอน ${money(payment.change_amount)}` : `เงินโอน${payment.transfer_reference ? ` (${payment.transfer_reference})` : ''}`,
+      paymentLine,
       String(store.receipt_footer ?? ''),
     ].filter(Boolean),
   }
@@ -109,11 +138,23 @@ function runPowerShellPrint(receipt) {
   const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-PrinterName', config.printerName, '-FontName', config.fontName, '-PayloadBase64', payloadBase64]
 
   return new Promise((resolve, reject) => {
+    let settled = false
     const child = spawn(executable, args, { windowsHide: true })
     let stderr = ''
+    const timeout = setTimeout(() => {
+      if (settled) return
+      settled = true
+      child.kill()
+      const error = new Error('Windows print command timed out; manager review required')
+      error.requiresReview = true
+      reject(error)
+    }, 60000)
     child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
-    child.once('error', reject)
+    child.once('error', (error) => { if (!settled) { settled = true; clearTimeout(timeout); reject(error) } })
     child.once('close', (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
       if (code === 0) resolve()
       else reject(new Error(`Windows print command failed (${code}): ${stderr.slice(0, 500)}`))
     })
@@ -132,14 +173,15 @@ async function processQueue() {
     if (!receipt) return
     try {
       await runPowerShellPrint(receipt)
-      await callRpc('bridge_complete_receipt_print', { p_receipt_id: receipt.id, p_success: true, p_error: null })
+      await callRpc('bridge_complete_receipt_print', { p_receipt_id: receipt.id, p_claim_token: receipt.claim_token, p_success: true, p_error: null, p_requires_review: false })
       lastPrintedAt = new Date().toISOString()
       lastError = null
       console.log(`[${lastPrintedAt}] printed receipt ${receipt.id}`)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'ไม่สามารถพิมพ์ได้'
+      if (error instanceof Error && (message.includes('QR_LOAD_FAILED') || message.includes('QR_URL_INVALID'))) error.requiresReview = true
       lastError = message
-      await callRpc('bridge_complete_receipt_print', { p_receipt_id: receipt.id, p_success: false, p_error: message })
+      await callRpc('bridge_complete_receipt_print', { p_receipt_id: receipt.id, p_claim_token: receipt.claim_token, p_success: false, p_error: message, p_requires_review: error?.requiresReview === true })
       console.error(`[${new Date().toISOString()}] print failed: ${message}`)
     }
   } catch (error) {

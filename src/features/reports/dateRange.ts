@@ -11,3 +11,12 @@ export function toBangkokEnd(date: string): string {
   const nextDate = String(nextDay.getUTCDate()).padStart(2, '0')
   return `${nextYear}-${nextMonth}-${nextDate}T00:00:00+07:00`
 }
+
+export function isValidDateRange(from: string, to: string): boolean {
+  const isValidDate = (value: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+    const date = new Date(`${value}T00:00:00Z`)
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
+  }
+  return isValidDate(from) && isValidDate(to) && from <= to
+}
